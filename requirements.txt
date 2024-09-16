@@ -1,0 +1,5 @@
+flask
+requests
+js2py
+beautifulsoup4
+gunicorn
