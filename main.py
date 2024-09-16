@@ -55,13 +55,21 @@ class iPhoneModelsAPI:
         return all_models
 
     def parse_models(self, all_data):
+        # 容量排序函數
+        def capacity_key(cap):
+            # 將容量轉為數字進行排序 (例：256gb -> 256, 1tb -> 1024)
+            if "tb" in cap.lower():
+                return int(cap.lower().replace("tb", "").strip()) * 1024
+            else:
+                return int(cap.lower().replace("gb", "").strip())
+
         models = {}
         for model_type, data in all_data.items():
             for product in data:
                 model_name = product["familyType"]
                 if model_name not in models:
                     models[model_name] = {
-                        "colors": {},
+                        "colors": [],
                         "capacities": set(),
                         "part_numbers": [],
                     }
@@ -70,49 +78,43 @@ class iPhoneModelsAPI:
                 capacity = product["dimensionCapacity"]
                 part_number = product["partNumber"]
 
-                if color_code not in models[model_name]["colors"]:
+                # 確保顏色不重複加入
+                if color_code not in [
+                    color["code"] for color in models[model_name]["colors"]
+                ]:
                     color_data = self.color_info[model_type].get(color_code, {})
-                    models[model_name]["colors"][color_code] = color_data.get(
-                        "value", color_code
+                    models[model_name]["colors"].append(
+                        {
+                            "code": color_code,
+                            "name": color_data.get("value", color_code),
+                        }
                     )
 
                 models[model_name]["capacities"].add(capacity)
 
+                # 確保 part_number 不重複
                 part_info = {
                     "color": color_code,
                     "capacity": capacity,
                     "part_number": part_number,
                 }
-
                 if part_info not in models[model_name]["part_numbers"]:
                     models[model_name]["part_numbers"].append(part_info)
 
         # 排序邏輯
         for model_name, model in models.items():
-            # 1. 容量排序
-            def capacity_key(cap):
-                # 將容量轉為數字進行排序 (例：256gb -> 256, 1tb -> 1024)
-                if "tb" in cap.lower():
-                    return int(cap.lower().replace("tb", "").strip()) * 1024
-                else:
-                    return int(cap.lower().replace("gb", "").strip())
+            # 1. 將 set 轉換為 list，這樣可以被 JSON 序列化
+            model["capacities"] = sorted(list(model["capacities"]), key=capacity_key)
 
-            model["capacities"] = sorted(model["capacities"], key=capacity_key)
-
-            # 2. 顏色排序
+            # 2. 顏色排序順序表，根據自訂的順序
             color_order = {
                 color: index
                 for index, color in enumerate(
                     self.color_info[model_type]["variantOrder"]
                 )
             }
-            model["colors"] = dict(
-                sorted(
-                    model["colors"].items(), key=lambda x: color_order.get(x[0], 999)
-                )
-            )
 
-            # 3. 根據顏色和容量排序 part_numbers
+            # 3. 根據顏色和容量進行兩級排序
             model["part_numbers"] = sorted(
                 model["part_numbers"],
                 key=lambda p: (
@@ -120,7 +122,6 @@ class iPhoneModelsAPI:
                     capacity_key(p["capacity"]),
                 ),
             )
-
         return models
 
     def get_models(self, lang):
