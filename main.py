@@ -1,13 +1,13 @@
-from flask import Flask, jsonify, request
-from flask_cors import CORS
-import requests
+from quart import Quart, jsonify, request
+from quart_cors import cors
+import aiohttp
+import asyncio
 import js2py
 import re
 from bs4 import BeautifulSoup
 
-app = Flask(__name__)
-CORS(app)
-
+app = Quart(__name__)
+app = cors(app)
 
 class iPhoneModelsAPI:
     def __init__(self):
@@ -17,22 +17,33 @@ class iPhoneModelsAPI:
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
-        self.models = None
+        self.models = ["iphone-16", "iphone-16-pro"]
         self.color_info = {}
 
     def get_language(self, accept_language):
         primary_lang = accept_language.split(",")[0].strip()
         return primary_lang.lower()
 
-    def fetch_models(self, lang):
-        all_models = {}
-        for model in ["iphone-16-pro", "iphone-16"]:
-            url = self.iphone_url.format(lang=lang, model=model)
-            response = requests.get(url, headers=self.headers)
-            if response.status_code != 200:
+    async def fetch_model(self, session, lang, model):
+        url = self.iphone_url.format(lang=lang, model=model)
+        async with session.get(url, headers=self.headers) as response:
+            if response.status != 200:
                 raise Exception(f"無法獲取 {model} 型號數據。請檢查您的網絡連接。")
+            return await response.text()
 
-            script_content = response.text
+    async def fetch_models(self, lang):
+        async with aiohttp.ClientSession() as session:
+            tasks = [self.fetch_model(session, lang, model) for model in self.models]
+            responses = await asyncio.gather(*tasks)
+        
+        all_models = {}
+        for model, response in zip(self.models, responses):
+            if isinstance(response, Exception):
+                print(f"獲取 {model} 時發生錯誤: {str(response)}")
+                continue
+            if response is None:
+                continue            
+            script_content = response
             start_index = script_content.find("window.PRODUCT_SELECTION_BOOTSTRAP")
             if start_index == -1:
                 raise Exception(f"無法在 {model} 頁面中找到產品數據。")
@@ -47,28 +58,29 @@ class iPhoneModelsAPI:
             context.execute(js_code)
             product_data = context.PRODUCT_SELECTION_BOOTSTRAP.to_dict()
 
-            self.color_info[model] = product_data["productSelectionData"][
-                "displayValues"
-            ]["dimensionColor"]
             all_models[model] = product_data["productSelectionData"]["products"]
-
+            self.color_info[model] = product_data["productSelectionData"]["displayValues"]["dimensionColor"]
+        
         return all_models
 
     def parse_models(self, all_data):
-        # 容量排序函數
         def capacity_key(cap):
-            # 將容量轉為數字進行排序 (例：256gb -> 256, 1tb -> 1024)
             if "tb" in cap.lower():
                 return int(cap.lower().replace("tb", "").strip()) * 1024
             else:
                 return int(cap.lower().replace("gb", "").strip())
 
-        models = {}
+        models = []
         for model_type, data in all_data.items():
+            model_info = {}
             for product in data:
-                model_name = product["familyType"]
-                if model_name not in models:
-                    models[model_name] = {
+                model_id = product["familyType"]
+                model_name = self.format_model_name(model_id)
+                
+                if model_name not in model_info:
+                    model_info[model_name] = {
+                        "id": model_id,
+                        "name": model_name,
                         "colors": [],
                         "capacities": set(),
                         "part_numbers": [],
@@ -78,72 +90,80 @@ class iPhoneModelsAPI:
                 capacity = product["dimensionCapacity"]
                 part_number = product["partNumber"]
 
-                # 確保顏色不重複加入
-                if color_code not in [
-                    color["code"] for color in models[model_name]["colors"]
-                ]:
+                if color_code not in [color["code"] for color in model_info[model_name]["colors"]]:
                     color_data = self.color_info[model_type].get(color_code, {})
-                    models[model_name]["colors"].append(
-                        {
-                            "code": color_code,
-                            "name": color_data.get("value", color_code),
-                        }
-                    )
+                    model_info[model_name]["colors"].append({
+                        "code": color_code,
+                        "name": color_data.get("value", color_code),
+                    })
 
-                models[model_name]["capacities"].add(capacity)
+                model_info[model_name]["capacities"].add(capacity)
 
-                # 確保 part_number 不重複
                 part_info = {
                     "color": color_code,
                     "capacity": capacity,
                     "part_number": part_number,
                 }
-                if part_info not in models[model_name]["part_numbers"]:
-                    models[model_name]["part_numbers"].append(part_info)
+                if part_info not in model_info[model_name]["part_numbers"]:
+                    model_info[model_name]["part_numbers"].append(part_info)
 
-        # 排序邏輯
-        for model_name, model in models.items():
-            # 1. 將 set 轉換為 list，這樣可以被 JSON 序列化
-            model["capacities"] = sorted(list(model["capacities"]), key=capacity_key)
+            # 轉換為列表並排序
+            for model in model_info.values():
+                model["capacities"] = sorted(list(model["capacities"]), key=capacity_key)
 
-            # 2. 顏色排序順序表，根據自訂的順序
-            color_order = {
-                color: index
-                for index, color in enumerate(
-                    self.color_info[model_type]["variantOrder"]
+                color_order = {color: index for index, color in enumerate(self.color_info[model_type]["variantOrder"])}
+
+                model["part_numbers"] = sorted(
+                    model["part_numbers"],
+                    key=lambda p: (color_order.get(p["color"], 999), capacity_key(p["capacity"])),
                 )
-            }
 
-            # 3. 根據顏色和容量進行兩級排序
-            model["part_numbers"] = sorted(
-                model["part_numbers"],
-                key=lambda p: (
-                    color_order.get(p["color"], 999),
-                    capacity_key(p["capacity"]),
-                ),
-            )
-        return models
+                models.append(model)
 
-    def get_models(self, lang):
-        data = self.fetch_models(lang)
+        # 根據型號名稱排序
+        models.sort(key=lambda x: (
+            int(re.search(r'\d+', x["name"]).group()),
+            "Pro Max" in x["name"],
+            "Pro" in x["name"],
+            "Plus" in x["name"]
+        ))
+
+        return {"models": models}
+
+    def format_model_name(self, model_id):
+        parts = model_id.lower().split('iphone')
+        if len(parts) > 1:
+            number = parts[1].split('pro')[0].strip()
+            if 'pro' in model_id.lower():
+                if 'max' in model_id.lower():
+                    return f"iPhone {number} Pro Max"
+                else:
+                    return f"iPhone {number} Pro"
+            elif 'plus' in model_id.lower():
+                return f"iPhone {number} Plus"
+            else:
+                return f"iPhone {number}"
+        return model_id  # 如果無法解析，返回原始 ID
+
+    async def get_models(self, lang):
+        data = await self.fetch_models(lang)
         return self.parse_models(data)
 
-    def fetch_and_parse_apple_regions(self):
-        response = requests.get(self.regions_url, headers=self.headers)
+    async def fetch_and_parse_apple_regions(self):
+        async with aiohttp.ClientSession() as session:
+            async with session.get(self.regions_url, headers=self.headers) as response:
+                if response.status != 200:
+                    return {
+                        "error": f"Failed to fetch the webpage. Status code: {response.status}"
+                    }
+                content = await response.text()
 
-        if response.status_code != 200:
-            return {
-                "error": f"Failed to fetch the webpage. Status code: {response.status_code}"
-            }
-
-        soup = BeautifulSoup(response.content, "html.parser")
+        soup = BeautifulSoup(content, "html.parser")
         sections = soup.find_all("section", class_="category")
 
         result = {}
         for section in sections:
-            region_name = section.get("data-analytics-section-engagement", "").split(
-                ":"
-            )[-1]
+            region_name = section.get("data-analytics-section-engagement", "").split(":")[-1]
             countries = []
 
             for li in section.find_all("li"):
@@ -172,47 +192,52 @@ class iPhoneModelsAPI:
 api = iPhoneModelsAPI()
 
 
-def format_response(http_status, status, message, data=None):
+async def format_response(http_status, status, message, data=None):
     response = {
-        "status": "success" if http_status < 400 else "error",
+        "status": status,
         "msg": message,
         "data": data,
     }
-    return jsonify(response), http_status
+    return response, http_status
 
 
 @app.route("/models", methods=["GET"])
-def get_models():
+async def get_models():
     try:
         accept_language = request.headers.get("Accept-Language", "")
         lang = api.get_language(accept_language)
-        models = api.get_models(lang)
-        return format_response(
+        models = await api.get_models(lang)
+        response, status_code = await format_response(
             200, "success", "Successfully retrieved iPhone models", models
         )
+        return jsonify(response), status_code
     except Exception as e:
-        return format_response(
+        response, status_code = await format_response(
             500, "error", f"An error occurred while retrieving iPhone models: {str(e)}"
         )
+        return jsonify(response), status_code
 
 
 @app.route("/regions", methods=["GET"])
-def get_apple_regions():
+async def get_apple_regions():
     try:
-        regions = api.fetch_and_parse_apple_regions()
+        regions = await api.fetch_and_parse_apple_regions()
         if "error" in regions:
-            return format_response(400, "error", regions["error"])
-        return format_response(
-            200, "success", "Successfully retrieved Apple regions", regions
-        )
+            response, status_code = await format_response(400, "error", regions["error"])
+        else:
+            response, status_code = await format_response(
+                200, "success", "Successfully retrieved Apple regions", regions
+            )
+        return jsonify(response), status_code
     except Exception as e:
-        return format_response(
+        response, status_code = await format_response(
             500, "error", f"An error occurred while retrieving Apple regions: {str(e)}"
         )
+        return jsonify(response), status_code
 
 
 @app.route("/")
-def home():
+async def home():
     return "API is running!"
 
 
