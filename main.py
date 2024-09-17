@@ -152,7 +152,7 @@ class iPhoneModelsAPI:
     def format_model_name(self, model_id):
         parts = model_id.lower().split("iphone")
         if len(parts) > 1:
-            number = parts[1].split("pro")[0].strip()
+            number = parts[1].split("pro")[0].strip().replace("plus", "").strip()
             if "pro" in model_id.lower():
                 if "max" in model_id.lower():
                     return f"iPhone {number} Pro Max"
