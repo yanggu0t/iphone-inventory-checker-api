@@ -180,7 +180,7 @@ class iPhoneModelsAPI:
         soup = BeautifulSoup(content, "html.parser")
         sections = soup.find_all("section", class_="category")
 
-        result = {}
+        result = []
         for section in sections:
             region_name = section.get("data-analytics-section-engagement", "").split(
                 ":"
@@ -205,7 +205,10 @@ class iPhoneModelsAPI:
                     countries.append(country)
 
             if region_name:
-                result[region_name] = countries
+                result.append({
+                    "title": region_name,
+                    "regions": countries
+                })
 
         return result
 
@@ -243,7 +246,7 @@ async def get_models():
 async def get_apple_regions():
     try:
         regions = await api.fetch_and_parse_apple_regions()
-        if "error" in regions:
+        if isinstance(regions, dict) and "error" in regions:
             response, status_code = await format_response(
                 400, "error", regions["error"]
             )
