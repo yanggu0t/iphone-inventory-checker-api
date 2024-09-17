@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 app = Quart(__name__)
 app = cors(app)
 
+
 class iPhoneModelsAPI:
     def __init__(self):
         self.base_url = "https://www.apple.com"
@@ -35,14 +36,14 @@ class iPhoneModelsAPI:
         async with aiohttp.ClientSession() as session:
             tasks = [self.fetch_model(session, lang, model) for model in self.models]
             responses = await asyncio.gather(*tasks)
-        
+
         all_models = {}
         for model, response in zip(self.models, responses):
             if isinstance(response, Exception):
                 print(f"獲取 {model} 時發生錯誤: {str(response)}")
                 continue
             if response is None:
-                continue            
+                continue
             script_content = response
             start_index = script_content.find("window.PRODUCT_SELECTION_BOOTSTRAP")
             if start_index == -1:
@@ -59,8 +60,10 @@ class iPhoneModelsAPI:
             product_data = context.PRODUCT_SELECTION_BOOTSTRAP.to_dict()
 
             all_models[model] = product_data["productSelectionData"]["products"]
-            self.color_info[model] = product_data["productSelectionData"]["displayValues"]["dimensionColor"]
-        
+            self.color_info[model] = product_data["productSelectionData"][
+                "displayValues"
+            ]["dimensionColor"]
+
         return all_models
 
     def parse_models(self, all_data):
@@ -76,7 +79,7 @@ class iPhoneModelsAPI:
             for product in data:
                 model_id = product["familyType"]
                 model_name = self.format_model_name(model_id)
-                
+
                 if model_name not in model_info:
                     model_info[model_name] = {
                         "id": model_id,
@@ -90,12 +93,16 @@ class iPhoneModelsAPI:
                 capacity = product["dimensionCapacity"]
                 part_number = product["partNumber"]
 
-                if color_code not in [color["code"] for color in model_info[model_name]["colors"]]:
+                if color_code not in [
+                    color["code"] for color in model_info[model_name]["colors"]
+                ]:
                     color_data = self.color_info[model_type].get(color_code, {})
-                    model_info[model_name]["colors"].append({
-                        "code": color_code,
-                        "name": color_data.get("value", color_code),
-                    })
+                    model_info[model_name]["colors"].append(
+                        {
+                            "code": color_code,
+                            "name": color_data.get("value", color_code),
+                        }
+                    )
 
                 model_info[model_name]["capacities"].add(capacity)
 
@@ -109,37 +116,49 @@ class iPhoneModelsAPI:
 
             # 轉換為列表並排序
             for model in model_info.values():
-                model["capacities"] = sorted(list(model["capacities"]), key=capacity_key)
+                model["capacities"] = sorted(
+                    list(model["capacities"]), key=capacity_key
+                )
 
-                color_order = {color: index for index, color in enumerate(self.color_info[model_type]["variantOrder"])}
+                color_order = {
+                    color: index
+                    for index, color in enumerate(
+                        self.color_info[model_type]["variantOrder"]
+                    )
+                }
 
                 model["part_numbers"] = sorted(
                     model["part_numbers"],
-                    key=lambda p: (color_order.get(p["color"], 999), capacity_key(p["capacity"])),
+                    key=lambda p: (
+                        color_order.get(p["color"], 999),
+                        capacity_key(p["capacity"]),
+                    ),
                 )
 
                 models.append(model)
 
         # 根據型號名稱排序
-        models.sort(key=lambda x: (
-            int(re.search(r'\d+', x["name"]).group()),
-            "Pro Max" in x["name"],
-            "Pro" in x["name"],
-            "Plus" in x["name"]
-        ))
+        models.sort(
+            key=lambda x: (
+                int(re.search(r"\d+", x["name"]).group()),
+                "Pro Max" in x["name"],
+                "Pro" in x["name"],
+                "Plus" in x["name"],
+            )
+        )
 
         return {"models": models}
 
     def format_model_name(self, model_id):
-        parts = model_id.lower().split('iphone')
+        parts = model_id.lower().split("iphone")
         if len(parts) > 1:
-            number = parts[1].split('pro')[0].strip()
-            if 'pro' in model_id.lower():
-                if 'max' in model_id.lower():
+            number = parts[1].split("pro")[0].strip()
+            if "pro" in model_id.lower():
+                if "max" in model_id.lower():
                     return f"iPhone {number} Pro Max"
                 else:
                     return f"iPhone {number} Pro"
-            elif 'plus' in model_id.lower():
+            elif "plus" in model_id.lower():
                 return f"iPhone {number} Plus"
             else:
                 return f"iPhone {number}"
@@ -163,7 +182,9 @@ class iPhoneModelsAPI:
 
         result = {}
         for section in sections:
-            region_name = section.get("data-analytics-section-engagement", "").split(":")[-1]
+            region_name = section.get("data-analytics-section-engagement", "").split(
+                ":"
+            )[-1]
             countries = []
 
             for li in section.find_all("li"):
@@ -223,7 +244,9 @@ async def get_apple_regions():
     try:
         regions = await api.fetch_and_parse_apple_regions()
         if "error" in regions:
-            response, status_code = await format_response(400, "error", regions["error"])
+            response, status_code = await format_response(
+                400, "error", regions["error"]
+            )
         else:
             response, status_code = await format_response(
                 200, "success", "Successfully retrieved Apple regions", regions
@@ -242,4 +265,4 @@ async def home():
 
 
 if __name__ == "__main__":
-    app.run(debug=False, host="0.0.0.0", port=5000)
+    app.run(debug=False, host="0.0.0.0", port=8080)
