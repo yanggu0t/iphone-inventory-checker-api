@@ -147,7 +147,7 @@ class iPhoneModelsAPI:
             )
         )
 
-        return {"models": models}
+        return models
 
     def format_model_name(self, model_id):
         parts = model_id.lower().split("iphone")
@@ -169,11 +169,14 @@ class iPhoneModelsAPI:
         return self.parse_models(data)
 
     async def fetch_and_parse_apple_regions(self):
+
+        exclude_titles = ['canada-french', 'hong-kong-english']  # 要排除的 analytics_title 列表
+
         async with aiohttp.ClientSession() as session:
             async with session.get(self.regions_url, headers=self.headers) as response:
                 if response.status != 200:
                     return {
-                        "error": f"Failed to fetch the webpage. Status code: {response.status}"
+                        "error": f"無法獲取網頁。狀態碼：{response.status}"
                     }
                 content = await response.text()
 
@@ -182,9 +185,12 @@ class iPhoneModelsAPI:
 
         result = []
         for section in sections:
-            region_name = section.get("data-analytics-section-engagement", "").split(
-                ":"
-            )[-1]
+            region_name = section.get("data-analytics-section-engagement", "").split(":")[-1]
+
+            # 跳過 europe 和 latin-america 區域
+            if region_name.lower() in ["europe", "latin-america", "africa-mideast"]:
+                continue
+            
             countries = []
 
             for li in section.find_all("li"):
@@ -192,17 +198,32 @@ class iPhoneModelsAPI:
                 if a_tag:
                     name_span = a_tag.find("span", property="schema:name")
                     lang_meta = a_tag.find("meta", property="schema:inLanguage")
+                    analytics_title = a_tag.get("data-analytics-title", "")
+
+                    # 跳過 Unknown 名稱的國家
+                    if not name_span or name_span.text.strip() == "Unknown":
+                        continue
+                    
+                    # 跳過指定的 analytics_title
+                    if analytics_title in exclude_titles:
+                        continue
 
                     # 使用正則表達式清理 URL
                     url = re.sub(r"^/|/$", "", a_tag.get("href", ""))
 
+                    # 處理中國的特殊情況
+                    if "china" in analytics_title.lower():
+                            url = "cn"
+
                     country = {
-                        "name": name_span.text.strip() if name_span else "Unknown",
+                        "name": name_span.text.strip(),
                         "lang_tag": url,
-                        "analytics_title": a_tag.get("data-analytics-title"),
+                        "analytics_title": analytics_title,
                         "language": lang_meta["content"] if lang_meta else None,
                     }
                     countries.append(country)
+
+                    
 
             if region_name:
                 result.append({
@@ -211,7 +232,6 @@ class iPhoneModelsAPI:
                 })
 
         return result
-
 
 api = iPhoneModelsAPI()
 
