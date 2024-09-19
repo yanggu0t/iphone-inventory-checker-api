@@ -4,6 +4,7 @@ import aiohttp
 import asyncio
 import js2py
 import re
+import json
 from bs4 import BeautifulSoup
 
 app = Quart(__name__)
@@ -14,7 +15,7 @@ class iPhoneModelsAPI:
     def __init__(self):
         self.base_url = "https://www.apple.com"
         self.iphone_url = self.base_url + "/{lang}/shop/buy-iphone/{model}"
-        self.regions_url = self.base_url + "/choose-country-region/"
+        self.locales_url = self.base_url + "/retail/storelist"
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
@@ -29,7 +30,9 @@ class iPhoneModelsAPI:
         url = self.iphone_url.format(lang=lang, model=model)
         async with session.get(url, headers=self.headers) as response:
             if response.status != 200:
-                raise Exception(f"無法獲取 {model} 型號數據。請檢查您的網絡連接。")
+                raise Exception(
+                    f"Unable to fetch {model} model data. Please check your network connection."
+                )
             return await response.text()
 
     async def fetch_models(self, lang):
@@ -40,18 +43,18 @@ class iPhoneModelsAPI:
         all_models = {}
         for model, response in zip(self.models, responses):
             if isinstance(response, Exception):
-                print(f"獲取 {model} 時發生錯誤: {str(response)}")
+                print(f"Error occurred while fetching {model}: {str(response)}")
                 continue
             if response is None:
                 continue
             script_content = response
             start_index = script_content.find("window.PRODUCT_SELECTION_BOOTSTRAP")
             if start_index == -1:
-                raise Exception(f"無法在 {model} 頁面中找到產品數據。")
+                raise Exception(f"Unable to find product data in {model} page.")
 
             end_index = script_content.find("</script>", start_index)
             if end_index == -1:
-                raise Exception(f"無法解析 {model} 產品數據。")
+                raise Exception(f"Unable to parse {model} product data.")
 
             js_code = script_content[start_index:end_index]
 
@@ -114,7 +117,7 @@ class iPhoneModelsAPI:
                 if part_info not in model_info[model_name]["part_numbers"]:
                     model_info[model_name]["part_numbers"].append(part_info)
 
-            # 轉換為列表並排序
+            # Convert to list and sort
             for model in model_info.values():
                 model["capacities"] = sorted(
                     list(model["capacities"]), key=capacity_key
@@ -137,7 +140,7 @@ class iPhoneModelsAPI:
 
                 models.append(model)
 
-        # 根據型號名稱排序
+        # Sort by model name
         models.sort(
             key=lambda x: (
                 int(re.search(r"\d+", x["name"]).group()),
@@ -162,76 +165,61 @@ class iPhoneModelsAPI:
                 return f"iPhone {number} Plus"
             else:
                 return f"iPhone {number}"
-        return model_id  # 如果無法解析，返回原始 ID
+        return model_id  # If unable to parse, return original ID
 
     async def get_models(self, lang):
         data = await self.fetch_models(lang)
         return self.parse_models(data)
 
     async def fetch_and_parse_apple_regions(self):
-
-        exclude_titles = ['canada-french', 'hong-kong-english']  # 要排除的 analytics_title 列表
-
         async with aiohttp.ClientSession() as session:
-            async with session.get(self.regions_url, headers=self.headers) as response:
+            async with session.get(self.locales_url, headers=self.headers) as response:
                 if response.status != 200:
                     return {
-                        "error": f"無法獲取網頁。狀態碼：{response.status}"
+                        "error": f"Unable to fetch webpage. Status code: {response.status}"
                     }
                 content = await response.text()
 
         soup = BeautifulSoup(content, "html.parser")
-        sections = soup.find_all("section", class_="category")
+        script = soup.find("script", id="__NEXT_DATA__")
+
+        if not script:
+            return {"error": "Unable to find script tag containing region information"}
+
+        print(json.loads(script.string)["props"]["locale"]["allGeoConfigs"])
+
+        try:
+            data = json.loads(script.string)
+            all_geo_configs = data["props"]["locale"]["allGeoConfigs"]
+        except (json.JSONDecodeError, KeyError):
+            return {"error": "Unable to parse JSON data or find required information"}
+
+        # Define list of IDs to exclude
+        excluded_ids = ["en_HK", "en_MO", "zh_MO", "fr_CA", "nl_BE", "fr_CH"]
 
         result = []
-        for section in sections:
-            region_name = section.get("data-analytics-section-engagement", "").split(":")[-1]
+        for geo_id, geo_config in all_geo_configs.items():
+            # Check if geo_id is in the excluded list
+            if geo_id not in excluded_ids:
+                # Special handling for zh_CN
+                lang_tag = (
+                    "cn"
+                    if geo_id == "zh_CN"
+                    else geo_config.get("storeRootPath", "").strip("/")
+                )
 
-            # 跳過 europe 和 latin-america 區域
-            if region_name.lower() in ["europe", "latin-america", "africa-mideast"]:
-                continue
-            
-            countries = []
+                region = {
+                    "id": geo_id,
+                    "country": geo_config.get("territory", ""),
+                    "lang_tag": lang_tag,
+                }
+                result.append(region)
 
-            for li in section.find_all("li"):
-                a_tag = li.find("a")
-                if a_tag:
-                    name_span = a_tag.find("span", property="schema:name")
-                    lang_meta = a_tag.find("meta", property="schema:inLanguage")
-                    analytics_title = a_tag.get("data-analytics-title", "")
-
-                    # 跳過 Unknown 名稱的國家
-                    if not name_span or name_span.text.strip() == "Unknown":
-                        continue
-                    
-                    # 跳過指定的 analytics_title
-                    if analytics_title in exclude_titles:
-                        continue
-
-                    # 使用正則表達式清理 URL
-                    url = re.sub(r"^/|/$", "", a_tag.get("href", ""))
-
-                    # 處理中國的特殊情況
-                    if "china" in analytics_title.lower():
-                            url = "cn"
-
-                    country = {
-                        "name": name_span.text.strip(),
-                        "lang_tag": url,
-                        "analytics_title": analytics_title,
-                        "language": lang_meta["content"] if lang_meta else None,
-                    }
-                    countries.append(country)
-
-                    
-
-            if region_name:
-                result.append({
-                    "title": region_name,
-                    "regions": countries
-                })
+        # Sort results by country name
+        result.sort(key=lambda x: x["country"])
 
         return result
+
 
 api = iPhoneModelsAPI()
 
@@ -262,7 +250,7 @@ async def get_models():
         return jsonify(response), status_code
 
 
-@app.route("/regions", methods=["GET"])
+@app.route("/locales", methods=["GET"])
 async def get_apple_regions():
     try:
         regions = await api.fetch_and_parse_apple_regions()
@@ -272,12 +260,17 @@ async def get_apple_regions():
             )
         else:
             response, status_code = await format_response(
-                200, "success", "Successfully retrieved Apple regions", regions
+                200,
+                "success",
+                "Successfully retrieved Apple region information",
+                regions,
             )
         return jsonify(response), status_code
     except Exception as e:
         response, status_code = await format_response(
-            500, "error", f"An error occurred while retrieving Apple regions: {str(e)}"
+            500,
+            "error",
+            f"An error occurred while retrieving Apple region information: {str(e)}",
         )
         return jsonify(response), status_code
 
