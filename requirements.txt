@@ -1,8 +1,8 @@
-quart>=0.18.0,<0.20.0
-quart-cors>=0.6.0,<0.8.0
-aiohttp>=3.8.0,<3.9.0
-js2py==0.74
-beautifulsoup4>=4.11.0,<4.13.0
-html5lib==1.1
-hypercorn>=0.14.0,<0.15.0
-werkzeug>=2.2.0,<2.4.0
+quart
+quart-cors
+aiohttp
+beautifulsoup4
+html5lib
+hypercorn
+werkzeug
+PyExecJS

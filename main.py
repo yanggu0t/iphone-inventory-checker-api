@@ -2,7 +2,7 @@ from quart import Quart, jsonify, request
 from quart_cors import cors
 import aiohttp
 import asyncio
-import js2py
+import execjs
 import re
 import json
 from bs4 import BeautifulSoup
@@ -21,6 +21,7 @@ class iPhoneModelsAPI:
         }
         self.models = ["iphone-16", "iphone-16-pro"]
         self.color_info = {}
+        self.image_base_url = "https://store.storeimages.cdn-apple.com/4982/as-images.apple.com/is/"
 
     def get_language(self, accept_language):
         primary_lang = accept_language.split(",")[0].strip()
@@ -43,29 +44,28 @@ class iPhoneModelsAPI:
         all_models = {}
         for model, response in zip(self.models, responses):
             if isinstance(response, Exception):
-                print(f"Error occurred while fetching {model}: {str(response)}")
                 continue
             if response is None:
                 continue
             script_content = response
             start_index = script_content.find("window.PRODUCT_SELECTION_BOOTSTRAP")
             if start_index == -1:
-                raise Exception(f"Unable to find product data in {model} page.")
+                raise Exception(f"無法在 {model} 頁面中找到產品數據。")
 
             end_index = script_content.find("</script>", start_index)
             if end_index == -1:
-                raise Exception(f"Unable to parse {model} product data.")
+                raise Exception(f"無法解析 {model} 產品數據。")
 
             js_code = script_content[start_index:end_index]
 
-            context = js2py.EvalJs()
-            context.execute(js_code)
-            product_data = context.PRODUCT_SELECTION_BOOTSTRAP.to_dict()
+            # 創建一個模擬的 window 對象
+            js_code = "var window = {};\n" + js_code
+
+            ctx = execjs.compile(js_code)
+            product_data = ctx.eval("window.PRODUCT_SELECTION_BOOTSTRAP")
 
             all_models[model] = product_data["productSelectionData"]["products"]
-            self.color_info[model] = product_data["productSelectionData"][
-                "displayValues"
-            ]["dimensionColor"]
+            self.color_info[model] = product_data["productSelectionData"]["displayValues"]["dimensionColor"]
 
         return all_models
 
@@ -95,6 +95,7 @@ class iPhoneModelsAPI:
                 color_code = product["dimensionColor"]
                 capacity = product["dimensionCapacity"]
                 part_number = product["partNumber"]
+                image_url = self.image_base_url+product['imageKey']
 
                 if color_code not in [
                     color["code"] for color in model_info[model_name]["colors"]
@@ -113,6 +114,7 @@ class iPhoneModelsAPI:
                     "color": color_code,
                     "capacity": capacity,
                     "part_number": part_number,
+                    "image_url":image_url
                 }
                 if part_info not in model_info[model_name]["part_numbers"]:
                     model_info[model_name]["part_numbers"].append(part_info)
@@ -186,8 +188,6 @@ class iPhoneModelsAPI:
         if not script:
             return {"error": "Unable to find script tag containing region information"}
 
-        print(json.loads(script.string)["props"]["locale"]["allGeoConfigs"])
-
         try:
             data = json.loads(script.string)
             all_geo_configs = data["props"]["locale"]["allGeoConfigs"]
@@ -220,6 +220,43 @@ class iPhoneModelsAPI:
 
         return result
 
+    async def fetch_config(self, lang):
+        url = self.base_url + f"/{lang}/shop/buy-iphone/iphone-16-pro/"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=self.headers) as response:
+                if response.status != 200:
+                    raise Exception("無法獲取配置數據。請檢查您的網絡連接。")
+                script_content = await response.text()
+    
+        print(f"獲取的網頁內容長度: {len(script_content)}")
+    
+        # 使用正則表達式查找並提取 JavaScript 對象
+        match = re.search(r'window\.fulfillmentBootstrap\s*=\s*({.*?});', script_content, re.DOTALL)
+        if not match:
+            raise Exception("無法找到產品數據。")
+    
+        js_object = match.group(1)
+    
+        try:
+            # 使用 PyExecJS 解析 JavaScript 對象
+            ctx = execjs.compile(f"var data = {js_object}")
+            content_data = ctx.eval("data")
+            
+            # 提取我們需要的特定數據
+            search_data = {
+                "pickupURL": content_data.get("pickupURL", ""),
+                "modelMessage": content_data.get("modelMessage", ""),
+                "validation": content_data.get("validation", {}),
+                "zipMessage"   : content_data.get("searchPlaceholder", ""),
+                "searchButton"   : content_data.get("searchButton", ""),
+                "suggestionsURL"   : content_data.get("suggestionsURL", ""),
+            }
+                        
+            # return config_data
+            return {"search":search_data}
+        except Exception as e:
+            print(f"處理數據時發生錯誤: {str(e)}")
+            raise
 
 api = iPhoneModelsAPI()
 
@@ -271,6 +308,23 @@ async def get_apple_regions():
             500,
             "error",
             f"An error occurred while retrieving Apple region information: {str(e)}",
+        )
+        return jsonify(response), status_code
+    
+
+@app.route("/config", methods=["GET"])
+async def get_config():
+    try:
+        accept_language = request.headers.get("Accept-Language", "")
+        lang = api.get_language(accept_language)
+        config = await api.fetch_config(lang)
+        response, status_code = await format_response(
+            200, "success", "Successfully retrieved configuration information", config
+        )
+        return jsonify(response), status_code
+    except Exception as e:
+        response, status_code = await format_response(
+            500, "error", f"An error occurred while retrieving configuration information: {str(e)}"
         )
         return jsonify(response), status_code
 
