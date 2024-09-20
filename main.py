@@ -225,37 +225,43 @@ class iPhoneModelsAPI:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=self.headers) as response:
                 if response.status != 200:
-                    raise Exception("無法獲取配置數據。請檢查您的網絡連接。")
+                    raise Exception("Unable to fetch configuration data. Please check your network connection.")
                 script_content = await response.text()
     
-        print(f"獲取的網頁內容長度: {len(script_content)}")
+        print(f"Length of fetched webpage content: {len(script_content)}")
     
-        # 使用正則表達式查找並提取 JavaScript 對象
+        # Use regular expression to find and extract JavaScript object
         match = re.search(r'window\.fulfillmentBootstrap\s*=\s*({.*?});', script_content, re.DOTALL)
         if not match:
-            raise Exception("無法找到產品數據。")
+            raise Exception("Unable to find product data.")
     
         js_object = match.group(1)
     
         try:
-            # 使用 PyExecJS 解析 JavaScript 對象
+            # Use PyExecJS to parse JavaScript object
             ctx = execjs.compile(f"var data = {js_object}")
             content_data = ctx.eval("data")
             
-            # 提取我們需要的特定數據
+            # Extract specific data we need
             search_data = {
                 "pickupURL": content_data.get("pickupURL", ""),
                 "modelMessage": content_data.get("modelMessage", ""),
-                "validation": content_data.get("validation", {}),
-                "zipMessage"   : content_data.get("searchPlaceholder", ""),
-                "searchButton"   : content_data.get("searchButton", ""),
-                "suggestionsURL"   : content_data.get("suggestionsURL", ""),
+                "validation": {
+                    "zip": {
+                        "invalidFormatError": content_data.get("validation", {}).get("zip", {}).get("invalidFormatError", "請輸入有效的郵編。"),
+                        "pattern": content_data.get("validation", {}).get("zip", {}).get("pattern", "^[0-9]{5}(-[0-9]{4})?$|^[ABCEGHJKLMNPRSTVXY]{1}[0-9]{1}[A-Z]{1} *[0-9]{1}[A-Z]{1}[0-9]{1}$|^[a-zA-Z ][-&#7;-zA-Z0-9, ]*$"),
+                        "requiredError": "请输入邮编" if lang == "cn" else content_data.get("validation", {}).get("zip", {}).get("requiredError", "Please enter a City or Zip")
+                    }
+                },
+                "zipMessage": "邮编" if lang == "cn" else content_data.get("searchPlaceholder", ""),
+                "searchMessage": "搜索" if lang == "cn" else content_data.get("searchButton", ""),
+                "suggestionsURL": content_data.get("suggestionsURL", ""),
             }
                         
             # return config_data
             return {"search":search_data}
         except Exception as e:
-            print(f"處理數據時發生錯誤: {str(e)}")
+            print(f"Error occurred while processing data: {str(e)}")
             raise
 
 api = iPhoneModelsAPI()
