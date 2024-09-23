@@ -244,7 +244,7 @@ class iPhoneModelsAPI:
             
             # Extract specific data we need
             search_data = {
-                "pickupURL": content_data.get("pickupURL", ""),
+                "countryCode": content_data.get("countryCode", ""),
                 "modelMessage": content_data.get("modelMessage", ""),
                 "validation": {
                     "zip": {
@@ -255,6 +255,10 @@ class iPhoneModelsAPI:
                 },
                 "zipMessage": "邮编" if lang == "cn" else content_data.get("searchPlaceholder", ""),
                 "searchMessage": "搜索" if lang == "cn" else content_data.get("searchButton", ""),
+                "loadingVoText": content_data.get("loadingVoText", ""),
+                
+                "pickupURL": content_data.get("pickupURL", ""),
+                "pickupEnabled": content_data.get("pickupEnabled", ""),
                 "suggestionsURL": content_data.get("suggestionsURL", ""),
             }
                         
