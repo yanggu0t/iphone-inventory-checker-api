@@ -76,6 +76,11 @@ class iPhoneModelsAPI:
             else:
                 return int(cap.lower().replace("gb", "").strip())
 
+        def extract_src(html_string):
+            soup = BeautifulSoup(html_string, 'html.parser')
+            img_tag = soup.find('img')
+            return img_tag['src'] if img_tag else None
+
         models = []
         for model_type, data in all_data.items():
             model_info = {}
@@ -105,6 +110,7 @@ class iPhoneModelsAPI:
                         {
                             "code": color_code,
                             "name": color_data.get("value", color_code),
+                            "image": extract_src(color_data.get("image", "")),
                         }
                     )
 
