@@ -323,28 +323,21 @@ class iPhoneModelsAPI:
                         .get("zip", {})
                         .get(
                             "pattern",
-                            "^[0-9]{5}(-[0-9]{4})?$|^[ABCEGHJKLMNPRSTVXY]{1}[0-9]{1}[A-Z]{1} *[0-9]{1}[A-Z]{1}[0-9]{1}$|^[a-zA-Z ][-&#7;-zA-Z0-9, ]*$",
+                            "",
                         ),
-                        "requiredError": "请输入邮编"
-                        if lang == "cn"
-                        else content_data.get("validation", {})
+                        "requiredError": content_data.get("validation", {})
                         .get("zip", {})
-                        .get("requiredError", "Please enter a City or Zip"),
+                        .get("requiredError", "請輸入城市或郵編"),
                     }
                 },
-                "zipMessage": "邮编"
-                if lang == "cn"
-                else content_data.get("searchPlaceholder", ""),
-                "searchMessage": "搜索"
-                if lang == "cn"
-                else content_data.get("searchButton", ""),
+                "zipMessage": content_data.get("searchPlaceholder", ""),
+                "searchMessage": content_data.get("searchButton", ""),
                 "loadingVoText": content_data.get("loadingVoText", ""),
                 "pickupURL": content_data.get("pickupURL", ""),
                 "pickupEnabled": content_data.get("pickupEnabled", ""),
                 "suggestionsURL": content_data.get("suggestionsURL", ""),
             }
 
-            # return config_data
             return {"search": search_data}
         except Exception as e:
             print(f"Error occurred while processing data: {str(e)}")
@@ -365,6 +358,7 @@ async def format_response(http_status, status, message, data=None):
 
 async def initialize_api():
     await api.update_disabled_countries()
+
 
 async def update_countries_periodically():
     while True:
