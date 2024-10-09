@@ -5,6 +5,7 @@ import asyncio
 import execjs
 import re
 import json
+from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 
 app = Quart(__name__)
@@ -21,7 +22,63 @@ class iPhoneModelsAPI:
         }
         self.models = ["iphone-16", "iphone-16-pro"]
         self.color_info = {}
-        self.image_base_url = "https://store.storeimages.cdn-apple.com/4982/as-images.apple.com/is/"
+        self.image_base_url = (
+            "https://store.storeimages.cdn-apple.com/4982/as-images.apple.com/is/"
+        )
+        self.disabled_countries = set()
+        self.last_update = None
+        self.update_interval = timedelta(hours=1)
+        self.update_lock = asyncio.Lock()
+
+    async def update_disabled_countries(self):
+        print("開始更新不可用國家列表...")
+        new_disabled_countries = set()
+        async with aiohttp.ClientSession() as session:
+            async with session.get(self.locales_url, headers=self.headers) as response:
+                if response.status != 200:
+                    print(f"無法獲取國家列表。狀態碼: {response.status}")
+                    return
+                content = await response.text()
+
+        soup = BeautifulSoup(content, "html.parser")
+        script = soup.find("script", id="__NEXT_DATA__")
+
+        if not script:
+            print("無法找到包含地區信息的腳本標籤")
+            return
+
+        try:
+            data = json.loads(script.string)
+            all_geo_configs = data["props"]["locale"]["allGeoConfigs"]
+        except (json.JSONDecodeError, KeyError):
+            print("無法解析 JSON 數據或找到所需信息")
+            return
+
+        for geo_id, geo_config in all_geo_configs.items():
+            lang_tag = (
+                "cn"
+                if geo_id == "zh_CN"
+                else geo_config.get("storeRootPath", "").strip("/")
+            )
+            try:
+                config = await self.fetch_config(lang_tag)
+                if not config.get("search", {}).get("pickupEnabled", False):
+                    new_disabled_countries.add(geo_id)
+            except Exception as e:
+                print(f"無法獲取 {lang_tag} 的配置: {str(e)}")
+                new_disabled_countries.add(geo_id)
+
+        async with self.update_lock:
+            self.disabled_countries = new_disabled_countries
+            self.last_update = datetime.now()
+        print(f"更新完成。不可用國家列表: {self.disabled_countries}")
+
+    async def get_disabled_countries(self):
+        if self.last_update is None:
+            async with self.update_lock:
+                if self.last_update is None:
+                    await self.update_disabled_countries()
+        return self.disabled_countries
 
     def get_language(self, accept_language):
         primary_lang = accept_language.split(",")[0].strip()
@@ -65,7 +122,9 @@ class iPhoneModelsAPI:
             product_data = ctx.eval("window.PRODUCT_SELECTION_BOOTSTRAP")
 
             all_models[model] = product_data["productSelectionData"]["products"]
-            self.color_info[model] = product_data["productSelectionData"]["displayValues"]["dimensionColor"]
+            self.color_info[model] = product_data["productSelectionData"][
+                "displayValues"
+            ]["dimensionColor"]
 
         return all_models
 
@@ -77,9 +136,9 @@ class iPhoneModelsAPI:
                 return int(cap.lower().replace("gb", "").strip())
 
         def extract_src(html_string):
-            soup = BeautifulSoup(html_string, 'html.parser')
-            img_tag = soup.find('img')
-            return img_tag['src'] if img_tag else None
+            soup = BeautifulSoup(html_string, "html.parser")
+            img_tag = soup.find("img")
+            return img_tag["src"] if img_tag else None
 
         models = []
         for model_type, data in all_data.items():
@@ -100,7 +159,7 @@ class iPhoneModelsAPI:
                 color_code = product["dimensionColor"]
                 capacity = product["dimensionCapacity"]
                 part_number = product["partNumber"]
-                image_url = self.image_base_url+product['imageKey']
+                image_url = self.image_base_url + product["imageKey"]
 
                 if color_code not in [
                     color["code"] for color in model_info[model_name]["colors"]
@@ -120,7 +179,7 @@ class iPhoneModelsAPI:
                     "color": color_code,
                     "capacity": capacity,
                     "part_number": part_number,
-                    "image_url":image_url
+                    "image_url": image_url,
                 }
                 if part_info not in model_info[model_name]["part_numbers"]:
                     model_info[model_name]["part_numbers"].append(part_info)
@@ -203,11 +262,10 @@ class iPhoneModelsAPI:
         # Define list of IDs to exclude
         excluded_ids = ["en_HK", "en_MO", "zh_MO", "fr_CA", "nl_BE", "fr_CH"]
 
+        disabled_countries = await self.get_disabled_countries()
         result = []
         for geo_id, geo_config in all_geo_configs.items():
-            # Check if geo_id is in the excluded list
-            if geo_id not in excluded_ids:
-                # Special handling for zh_CN
+            if geo_id not in excluded_ids and geo_id not in disabled_countries:
                 lang_tag = (
                     "cn"
                     if geo_id == "zh_CN"
@@ -221,7 +279,7 @@ class iPhoneModelsAPI:
                 }
                 result.append(region)
 
-        # Sort results by country name
+        # 按國家名稱排序
         result.sort(key=lambda x: x["country"])
 
         return result
@@ -231,48 +289,67 @@ class iPhoneModelsAPI:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=self.headers) as response:
                 if response.status != 200:
-                    raise Exception("Unable to fetch configuration data. Please check your network connection.")
+                    raise Exception(
+                        "Unable to fetch configuration data. Please check your network connection."
+                    )
                 script_content = await response.text()
-    
+
         print(f"Length of fetched webpage content: {len(script_content)}")
-    
+
         # Use regular expression to find and extract JavaScript object
-        match = re.search(r'window\.fulfillmentBootstrap\s*=\s*({.*?});', script_content, re.DOTALL)
+        match = re.search(
+            r"window\.fulfillmentBootstrap\s*=\s*({.*?});", script_content, re.DOTALL
+        )
         if not match:
             raise Exception("Unable to find product data.")
-    
+
         js_object = match.group(1)
-    
+
         try:
             # Use PyExecJS to parse JavaScript object
             ctx = execjs.compile(f"var data = {js_object}")
             content_data = ctx.eval("data")
-            
+
             # Extract specific data we need
             search_data = {
                 "countryCode": content_data.get("countryCode", ""),
                 "modelMessage": content_data.get("modelMessage", ""),
                 "validation": {
                     "zip": {
-                        "invalidFormatError": content_data.get("validation", {}).get("zip", {}).get("invalidFormatError", "請輸入有效的郵編。"),
-                        "pattern": content_data.get("validation", {}).get("zip", {}).get("pattern", "^[0-9]{5}(-[0-9]{4})?$|^[ABCEGHJKLMNPRSTVXY]{1}[0-9]{1}[A-Z]{1} *[0-9]{1}[A-Z]{1}[0-9]{1}$|^[a-zA-Z ][-&#7;-zA-Z0-9, ]*$"),
-                        "requiredError": "请输入邮编" if lang == "cn" else content_data.get("validation", {}).get("zip", {}).get("requiredError", "Please enter a City or Zip")
+                        "invalidFormatError": content_data.get("validation", {})
+                        .get("zip", {})
+                        .get("invalidFormatError", "請輸入有效的郵編。"),
+                        "pattern": content_data.get("validation", {})
+                        .get("zip", {})
+                        .get(
+                            "pattern",
+                            "^[0-9]{5}(-[0-9]{4})?$|^[ABCEGHJKLMNPRSTVXY]{1}[0-9]{1}[A-Z]{1} *[0-9]{1}[A-Z]{1}[0-9]{1}$|^[a-zA-Z ][-&#7;-zA-Z0-9, ]*$",
+                        ),
+                        "requiredError": "请输入邮编"
+                        if lang == "cn"
+                        else content_data.get("validation", {})
+                        .get("zip", {})
+                        .get("requiredError", "Please enter a City or Zip"),
                     }
                 },
-                "zipMessage": "邮编" if lang == "cn" else content_data.get("searchPlaceholder", ""),
-                "searchMessage": "搜索" if lang == "cn" else content_data.get("searchButton", ""),
+                "zipMessage": "邮编"
+                if lang == "cn"
+                else content_data.get("searchPlaceholder", ""),
+                "searchMessage": "搜索"
+                if lang == "cn"
+                else content_data.get("searchButton", ""),
                 "loadingVoText": content_data.get("loadingVoText", ""),
-                
                 "pickupURL": content_data.get("pickupURL", ""),
                 "pickupEnabled": content_data.get("pickupEnabled", ""),
                 "suggestionsURL": content_data.get("suggestionsURL", ""),
             }
-                        
+
             # return config_data
-            return {"search":search_data}
+            return {"search": search_data}
         except Exception as e:
             print(f"Error occurred while processing data: {str(e)}")
             raise
+
 
 api = iPhoneModelsAPI()
 
@@ -284,6 +361,15 @@ async def format_response(http_status, status, message, data=None):
         "data": data,
     }
     return response, http_status
+
+
+async def initialize_api():
+    await api.update_disabled_countries()
+
+async def update_countries_periodically():
+    while True:
+        await asyncio.sleep(3600)  # 等待一小時
+        await api.update_disabled_countries()
 
 
 @app.route("/models", methods=["GET"])
@@ -326,7 +412,7 @@ async def get_apple_regions():
             f"An error occurred while retrieving Apple region information: {str(e)}",
         )
         return jsonify(response), status_code
-    
+
 
 @app.route("/config", methods=["GET"])
 async def get_config():
@@ -340,7 +426,9 @@ async def get_config():
         return jsonify(response), status_code
     except Exception as e:
         response, status_code = await format_response(
-            500, "error", f"An error occurred while retrieving configuration information: {str(e)}"
+            500,
+            "error",
+            f"An error occurred while retrieving configuration information: {str(e)}",
         )
         return jsonify(response), status_code
 
@@ -351,4 +439,8 @@ async def home():
 
 
 if __name__ == "__main__":
+    api = iPhoneModelsAPI()
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(initialize_api())  # 服務啟動時立即更新
+    loop.create_task(update_countries_periodically())
     app.run(debug=False, host="0.0.0.0", port=8080)
